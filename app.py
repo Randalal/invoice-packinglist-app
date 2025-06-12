@@ -527,5 +527,5 @@ if "final_invoice_file" in st.session_state:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 else:
-    st.info("Invoice file not ready. Please complete Step 5 first.")
+    st.info("Invoice file not ready. Please complete upload first.")
 
