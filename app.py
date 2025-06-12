@@ -504,7 +504,7 @@ def fill_invoice_template_core():
 
 # -------- Fill Invoice Template --------
 
-st.subheader("Fill Invoice and Packing list Info")
+st.header("Fill Invoice and Packing list Info")
 
 if st.button("Fill Invoice Template"):
     success, msg = fill_invoice_template_core()
