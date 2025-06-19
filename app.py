@@ -4,6 +4,8 @@ from openpyxl import load_workbook
 from openpyxl.utils import range_boundaries
 from datetime import datetime
 from io import BytesIO
+from openpyxl.styles import Alignment, Border, Side
+
 
 # 设置页面标题与布局
 st.set_page_config(page_title="Invoice & Packing List Generator", layout="centered")
@@ -274,11 +276,8 @@ if uploaded_hs:
 
 
 # -------- Step 2: Fill Invoice Template --------
-
-def fill_invoice_template_core():
+def fill_invoice_template_core(wb):
     try:
-        invoice_template_file = st.session_state["invoice_template_file"]
-        wb = load_workbook(filename=BytesIO(invoice_template_file))
         ws = wb["Invoice"] if "Invoice" in wb.sheetnames else wb.active
 
         # Step 2.1 - 填写 BILL TO
@@ -366,7 +365,6 @@ def fill_invoice_template_core():
                 ws[f"H{row}"] = ""
 
         # 居中 + 边框
-        from openpyxl.styles import Alignment, Border, Side
 
         # 样式设置：居中 + 黑色细边框
         center_align = Alignment(horizontal="center", vertical="center")
@@ -413,7 +411,6 @@ def fill_invoice_template_core():
                 cell.border = thin_border
 
         # Step 2.5: 添加 Total 汇总行 -------
-        from openpyxl.styles import Alignment, Border, Side
 
         # 居中样式
         center_align = Alignment(horizontal="center", vertical="center")
@@ -469,8 +466,6 @@ def fill_invoice_template_core():
 
         start_row = 26
 
-        from openpyxl.styles import Alignment, Border, Side
-
         center_align = Alignment(horizontal="center", vertical="center")
         thin_border = Border(
             left=Side(style="thin"),
@@ -490,32 +485,177 @@ def fill_invoice_template_core():
             cell.alignment = center_align
             cell.border = thin_border
 
-        # 保存到内存
-        output_buffer = BytesIO()
-        wb.save(output_buffer)
-        st.session_state["final_invoice_file"] = output_buffer
-
         return True, "Invoice and Packing list filled successfully."
 
     except Exception as e:
         return False, f"Error during invoice core filling: {str(e)}"
 
+# -------- Step 3: Fill Packing List Sheet --------
+
+def fill_packing_list_template_core(wb):
+    try:
+        ws = wb["Packing List"]
+
+        from datetime import datetime
+        from openpyxl.styles import Alignment, Border, Side
+
+        center_align = Alignment(horizontal="center", vertical="center")
+        thin_border = Border(
+            left=Side(style="thin", color="000000"),
+            right=Side(style="thin", color="000000"),
+            top=Side(style="thin", color="000000"),
+            bottom=Side(style="thin", color="000000")
+        )
+
+        # Step 3.1 - 填写 BILL TO
+        bill_to_lines = st.session_state.get("bill_to_lines", [])
+        for i, line in enumerate(bill_to_lines):
+            ws[f"A{14 + i}"] = line
+
+        # Step 3.2 - 填写收件人地址信息
+        info = st.session_state.get("sheet2_info", {})
+        ws["A18"] = info.get("E5", "")  # City
+        ws["A19"] = info.get("F5", "")  # Phone
+        ws["A20"] = f"{info.get('D5', '')} {info.get('H5', '')}"  # Address + AWB
+        ws["A21"] = f"{info.get('G5', '')}, {info.get('I5', '')}"
+        ws["F16"] = f"{info.get('G5', '')}, {info.get('I5', '')}"
+
+        # Step 3.3 - 包装类型、日期
+        raw_code = st.session_state.get("package_code", "")
+        parts = raw_code.strip().split()
+
+        if parts and parts[0].isdigit():
+            count = int(parts[0])
+            ws["A24"] = f"{count} Pallet(s)"
+        else:
+            ws["A24"] = raw_code
+
+        ws["F10"] = datetime.today().strftime("%d/%m/%Y")
+        ws["G24"] = "Made in China"
+
+        # Step 3.4 - 插入产品明细（不含价格）
+        product_list = st.session_state.get("product_list", [])
+        start_row = 26
+
+        st.write(f"产品数：{len(product_list)}，开始写入行：{start_row}")
+
+        ws.delete_rows(start_row, amount=1)
+        ws.insert_rows(start_row, amount=len(product_list))
+
+        pi_file = st.session_state.get("pi_upload", None)
+        pi_number = ""
+        if pi_file:
+            wb_pi = load_workbook(filename=BytesIO(pi_file.getvalue()), data_only=True)
+            ws_pi = wb_pi.active
+            pi_number = ws_pi["K6"].value or ""
+
+        for i, prod in enumerate(product_list):
+            row = start_row + i
+            ean = str(prod.get("EAN", "")).strip()
+            desc = prod.get("Description", "").strip()
+            qty = prod.get("Quantity", "")
+
+            ws[f"B{row}"].value = ean
+            ws[f"B{row}"].number_format = "@"
+            ws[f"B{row}"].alignment = center_align
+            ws[f"B{row}"].border = thin_border
+
+            col_map = {
+                "C": pi_number,
+                "D": desc,
+                "E": "China",
+                "F": qty,
+                "G": "",
+                "H": ""
+            }
+
+            for col, val in col_map.items():
+                ws[f"{col}{row}"].value = val
+                ws[f"{col}{row}"].alignment = center_align
+                ws[f"{col}{row}"].border = thin_border
+
+            ws.row_dimensions[row].outlineLevel = 0
+            ws.row_dimensions[row].hidden = False
+
+        # Step 3.5 - 汇总 Total 行
+        total_row = start_row + len(product_list)
+        cell_val = ws[f"D{total_row}"].value
+
+        if cell_val and str(cell_val).strip().lower() == "total":
+            total_pcs = sum(int(prod.get("Quantity", 0)) for prod in product_list)
+            ws[f"F{total_row}"] = total_pcs
+            ws[f"F{total_row}"].alignment = center_align
+            ws.row_dimensions[total_row].outlineLevel = 0
+            ws.row_dimensions[total_row].hidden = False
+        else:
+            st.warning(
+                f"模板中找不到紧跟产品明细后的 Total 行（当前 D{total_row} 值为 '{cell_val}'），请确认是否正确写为 'Total'")
+
+        # Step 3.6 - 写入 HS Code
+        hs_mapping = st.session_state.get("hs_mapping", {})
+        for i, prod in enumerate(product_list):
+            row = start_row + i
+            ean = str(prod.get("EAN", "")).strip()
+            ws[f"A{row}"].value = hs_mapping.get(ean, "")
+            ws[f"A{row}"].number_format = "@"
+            ws[f"A{row}"].alignment = center_align
+            ws[f"A{row}"].border = thin_border
+
+        # Step 3.7 - 写入体积与重量（从 picking 文件中取 G12/H12）
+        picking_file = st.session_state.get("picking_upload", None)
+        if picking_file:
+            try:
+                wb_pick = load_workbook(filename=BytesIO(picking_file.getvalue()), data_only=True)
+                ws_pick = wb_pick["Order Pick Sheet"]
+
+                volume = ws_pick["G12"].value or ""
+                weight = ws_pick["F12"].value or ""
+
+                st.write(f"读取到体积（G12）为: {volume}")
+                st.write(f"读取到重量（F12）为: {weight}")
+
+                for i, prod in enumerate(product_list):
+                    row = start_row + i
+                    st.write(f"写入第 {row} 行: 体积={volume}, 重量={weight}")
+
+                    # 强制转为字符串再写入
+                    ws[f"G{row}"].value = str(volume)
+                    ws[f"G{row}"].data_type = 's'
+                    ws[f"G{row}"].alignment = center_align
+                    ws[f"G{row}"].border = thin_border
+
+                    ws[f"H{row}"].value = str(weight)
+                    ws[f"H{row}"].data_type = 's'
+                    ws[f"H{row}"].alignment = center_align
+                    ws[f"H{row}"].border = thin_border
+
+            except Exception as e:
+                st.warning(f"读取 picking 文件失败：{str(e)}")
+
+        return True, "Packing list filled."
+    except Exception as e:
+        return False, f"Error in packing list filling: {str(e)}"
 
 
-# -------- Fill Invoice Template --------
+# -------- 保存 Invoice + Packing List --------
 
-st.header("Fill Invoice and Packing list Info")
+if st.button("Fill Invoice & Packing List"):
+    invoice_template_file = st.session_state["invoice_template_file"]
+    wb = load_workbook(filename=BytesIO(invoice_template_file))
 
-if st.button("Fill Invoice Template"):
-    success, msg = fill_invoice_template_core()
-    if success:
-        st.success(msg)
+    success1, msg1 = fill_invoice_template_core(wb)
+    success2, msg2 = fill_packing_list_template_core(wb)
+
+    if success1 and success2:
+        output_buffer = BytesIO()
+        wb.save(output_buffer)
+        st.session_state["final_invoice_file"] = output_buffer
+        st.success("Invoice & Packing List filled.")
     else:
-        st.error(msg)
-
-    st.markdown("Session keys:")
-    st.write(list(st.session_state.keys()))
-
+        if not success1:
+            st.error(msg1)
+        if not success2:
+            st.error(msg2)
 
 # -------- Export Final Invoice --------
 
