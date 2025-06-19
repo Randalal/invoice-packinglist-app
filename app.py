@@ -159,6 +159,8 @@ if uploaded_packing:
         from io import BytesIO
         import pandas as pd
 
+        st.session_state["picking_upload"] = uploaded_packing
+
         wb = load_workbook(filename=BytesIO(uploaded_packing.read()), data_only=True)
         ws = wb.active
 
@@ -514,10 +516,10 @@ def fill_packing_list_template_core(wb):
 
         # Step 3.2 - 填写收件人地址信息
         info = st.session_state.get("sheet2_info", {})
-        ws["A18"] = info.get("E5", "")  # City
-        ws["A19"] = info.get("F5", "")  # Phone
-        ws["A20"] = f"{info.get('D5', '')} {info.get('H5', '')}"  # Address + AWB
-        ws["A21"] = f"{info.get('G5', '')}, {info.get('I5', '')}"
+        ws["A19"] = info.get("E5", "")  # City
+        ws["A20"] = info.get("F5", "")  # Phone
+        ws["A21"] = f"{info.get('D5', '')} {info.get('H5', '')}"  # Address + AWB
+        ws["A22"] = f"{info.get('G5', '')}, {info.get('I5', '')}"
         ws["F16"] = f"{info.get('G5', '')}, {info.get('I5', '')}"
 
         # Step 3.3 - 包装类型、日期
@@ -536,8 +538,6 @@ def fill_packing_list_template_core(wb):
         # Step 3.4 - 插入产品明细（不含价格）
         product_list = st.session_state.get("product_list", [])
         start_row = 26
-
-        st.write(f"产品数：{len(product_list)}，开始写入行：{start_row}")
 
         ws.delete_rows(start_row, amount=1)
         ws.insert_rows(start_row, amount=len(product_list))
@@ -565,8 +565,6 @@ def fill_packing_list_template_core(wb):
                 "D": desc,
                 "E": "China",
                 "F": qty,
-                "G": "",
-                "H": ""
             }
 
             for col, val in col_map.items():
@@ -601,36 +599,46 @@ def fill_packing_list_template_core(wb):
             ws[f"A{row}"].alignment = center_align
             ws[f"A{row}"].border = thin_border
 
-        # Step 3.7 - 写入体积与重量（从 picking 文件中取 G12/H12）
+        # Step 3.7 - 写入体积与重量（G/H列）
         picking_file = st.session_state.get("picking_upload", None)
         if picking_file:
             try:
                 wb_pick = load_workbook(filename=BytesIO(picking_file.getvalue()), data_only=True)
                 ws_pick = wb_pick["Order Pick Sheet"]
 
-                volume = ws_pick["G12"].value or ""
-                weight = ws_pick["F12"].value or ""
-
-                st.write(f"读取到体积（G12）为: {volume}")
-                st.write(f"读取到重量（F12）为: {weight}")
+                volume = str(ws_pick["G12"].value or "")
+                weight = str(ws_pick["F12"].value or "")
 
                 for i, prod in enumerate(product_list):
                     row = start_row + i
-                    st.write(f"写入第 {row} 行: 体积={volume}, 重量={weight}")
-
-                    # 强制转为字符串再写入
-                    ws[f"G{row}"].value = str(volume)
-                    ws[f"G{row}"].data_type = 's'
+                    ws[f"G{row}"] = volume
                     ws[f"G{row}"].alignment = center_align
                     ws[f"G{row}"].border = thin_border
-
-                    ws[f"H{row}"].value = str(weight)
-                    ws[f"H{row}"].data_type = 's'
+                    ws[f"H{row}"] = weight
                     ws[f"H{row}"].alignment = center_align
                     ws[f"H{row}"].border = thin_border
-
             except Exception as e:
-                st.warning(f"读取 picking 文件失败：{str(e)}")
+                st.warning(f"读取 Picking Sheet 失败：{str(e)}")
+
+        # Step 3.8 - 写入 GR.WT 与 TOTAL MEASUREMENT 信息
+        # 位置：total_row + 2（空一行），total_row + 3（GR.WT），total_row + 4（TOTAL MEASUREMENT）
+        ws[f"A{total_row + 2}"] = ""
+        ws[f"A{total_row + 3}"] = f"GR. WT : {weight} kgs"
+        ws[f"A{total_row + 3}"].alignment = Alignment(horizontal="left")
+
+        # 解析体积字符串，如 135CMx80cmx63cm → 135 × 80 × 63 cm³
+        import re
+        match = re.findall(r"(\d+)", str(volume))
+        cbm_val = ""
+        if len(match) == 3:
+            l, w, h = map(int, match)
+            cbm = round((l * w * h) / 1_000_000, 3)  # 转换为立方米
+            cbm_val = f"{cbm} cbm"
+        else:
+            cbm_val = str(volume)  # 如果格式无法解析就原样写入
+
+        ws[f"A{total_row + 4}"] = f"TOTAL MEASUREMENT : {cbm_val}"
+        ws[f"A{total_row + 4}"].alignment = Alignment(horizontal="left")
 
         return True, "Packing list filled."
     except Exception as e:
